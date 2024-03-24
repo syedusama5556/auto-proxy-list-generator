@@ -38,7 +38,11 @@ class SpysMeScraper(Scraper):
         super().__init__(method, "https://spys.me/{mode}.txt")
 
     def get_url(self, **kwargs):
-        mode = "proxy" if self.method == "http" else "socks" if self.method == "socks" else "unknown"
+        mode = (
+            "proxy"
+            if self.method == "http"
+            else "socks" if self.method == "socks" else "unknown"
+        )
         if mode == "unknown":
             raise NotImplementedError
         return super().get_url(mode=mode, **kwargs)
@@ -50,39 +54,56 @@ class ProxyScrapeScraper(Scraper):
     def __init__(self, method, timeout=1000, country="All"):
         self.timout = timeout
         self.country = country
-        super().__init__(method,
-                         "https://api.proxyscrape.com/?request=getproxies"
-                         "&proxytype={method}"
-                         "&timeout={timout}"
-                         "&country={country}")
+        super().__init__(
+            method,
+            "https://api.proxyscrape.com/?request=getproxies"
+            "&proxytype={method}"
+            "&timeout={timout}"
+            "&country={country}",
+        )
 
     def get_url(self, **kwargs):
         return super().get_url(timout=self.timout, country=self.country, **kwargs)
 
+
 # From geonode.com - A little dirty, grab http(s) and socks but use just for socks
 class GeoNodeScraper(Scraper):
 
-    def __init__(self, method, limit="500", page="1", sort_by="lastChecked", sort_type="desc"):
+    def __init__(
+        self, method, limit="500", page="1", sort_by="lastChecked", sort_type="desc"
+    ):
         self.limit = limit
         self.page = page
         self.sort_by = sort_by
         self.sort_type = sort_type
-        super().__init__(method,
-                         "https://proxylist.geonode.com/api/proxy-list?"
-                         "&limit={limit}"
-                         "&page={page}"
-                         "&sort_by={sort_by}"
-                         "&sort_type={sort_type}")
+        super().__init__(
+            method,
+            "https://proxylist.geonode.com/api/proxy-list?"
+            "&limit={limit}"
+            "&page={page}"
+            "&sort_by={sort_by}"
+            "&sort_type={sort_type}",
+        )
 
     def get_url(self, **kwargs):
-        return super().get_url(limit=self.limit, page=self.page, sort_by=self.sort_by, sort_type=self.sort_type, **kwargs)
+        return super().get_url(
+            limit=self.limit,
+            page=self.page,
+            sort_by=self.sort_by,
+            sort_type=self.sort_type,
+            **kwargs,
+        )
+
 
 # From proxy-list.download
 class ProxyListDownloadScraper(Scraper):
 
     def __init__(self, method, anon):
         self.anon = anon
-        super().__init__(method, "https://www.proxy-list.download/api/v1/get?type={method}&anon={anon}")
+        super().__init__(
+            method,
+            "https://www.proxy-list.download/api/v1/get?type={method}&anon={anon}",
+        )
 
     def get_url(self, **kwargs):
         return super().get_url(anon=self.anon, **kwargs)
@@ -94,7 +115,9 @@ class GeneralTableScraper(Scraper):
     async def handle(self, response):
         soup = BeautifulSoup(response.text, "html.parser")
         proxies = set()
-        table = soup.find("table", attrs={"class": "table table-striped table-bordered"})
+        table = soup.find(
+            "table", attrs={"class": "table table-striped table-bordered"}
+        )
         for row in table.findAll("tr"):
             count = 0
             proxy = ""
@@ -131,36 +154,41 @@ def verbose_print(verbose, message):
         print(message)
 
 
-async def scrape(method, output, verbose):
+async def scrape(methods, output, verbose):
     now = time.time()
-    methods = [method]
-    if method == "socks":
-        methods += ["socks4", "socks5"]
+
+    # Ensure methods is a list and handle SOCKS variations correctly
+    methods = methods if isinstance(methods, list) else [methods]
+    methods = methods if "socks" not in methods else ["socks4", "socks5"]
+
     proxy_scrapers = [s for s in scrapers if s.method in methods]
     if not proxy_scrapers:
-        raise ValueError("Method not supported")
+        raise ValueError(f"None of the methods {methods} are supported")
+
     verbose_print(verbose, "Scraping proxies...")
     proxies = []
 
-    tasks = []
-    client = httpx.AsyncClient(follow_redirects=True)
+    async with httpx.AsyncClient(follow_redirects=True) as client:
 
-    async def scrape_scraper(scraper):
-        try:
-            verbose_print(verbose, f"Looking {scraper.get_url()}...")
-            proxies.extend(await scraper.scrape(client))
-        except Exception:
-            pass
+        async def scrape_scraper(scraper):
+            try:
+                verbose_print(verbose, f"Looking {scraper.get_url()}...")
+                scraped_proxies = await scraper.scrape(client)
+                proxies.extend(scraped_proxies)  # Append directly to the shared list
+            except Exception as e:
+                print(
+                    f"Error scraping with {scraper.name}: {e}"
+                )  # Log specific scraper errors
 
-    for scraper in proxy_scrapers:
-        tasks.append(asyncio.ensure_future(scrape_scraper(scraper)))
-
-    await asyncio.gather(*tasks)
-    await client.aclose()
+        tasks = [
+            asyncio.create_task(scrape_scraper(scraper)) for scraper in proxy_scrapers
+        ]
+        await asyncio.gather(*tasks)
 
     verbose_print(verbose, f"Writing {len(proxies)} proxies to file...")
     with open(output, "w") as f:
         f.write("\n".join(proxies))
+
     verbose_print(verbose, "Done!")
     verbose_print(verbose, f"Took {time.time() - now} seconds")
 
@@ -170,7 +198,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "-p",
         "--proxy",
-        help="Supported proxy type: " + ", ".join(sorted(set([s.method for s in scrapers]))),
+        help="Supported proxy type: "
+        + ", ".join(sorted(set([s.method for s in scrapers]))),
         required=True,
     )
     parser.add_argument(
@@ -187,13 +216,15 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    if sys.version_info >= (3, 7) and platform.system() == 'Windows':
+    methods = [method.strip() for method in args.proxy.split(",")]
+
+    if sys.version_info >= (3, 7) and platform.system() == "Windows":
         loop = asyncio.get_event_loop()
-        loop.run_until_complete(scrape(args.proxy, args.output, args.verbose))
+        loop.run_until_complete(scrape(methods, args.output, args.verbose))
         loop.close()
     elif sys.version_info >= (3, 7):
-        asyncio.run(scrape(args.proxy, args.output, args.verbose))
+        asyncio.run(scrape(methods, args.output, args.verbose))
     else:
         loop = asyncio.get_event_loop()
-        loop.run_until_complete(scrape(args.proxy, args.output, args.verbose))
+        loop.run_until_complete(scrape(methods, args.output, args.verbose))
         loop.close()
